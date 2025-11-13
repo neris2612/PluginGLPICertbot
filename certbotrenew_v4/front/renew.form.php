@@ -29,32 +29,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
                 exec('sudo /usr/bin/certbot certificates 2>&1', $output, $return_code);
                 break;
 
-            case 'log':
-                if (file_exists(CERTBOT_LOG_PATH)) {
-                    // Verifica se o arquivo é legível
-                    if (!is_readable(CERTBOT_LOG_PATH)) {
-                        // Tenta ler com sudo
-                        exec('sudo cat ' . escapeshellarg(CERTBOT_LOG_PATH) . ' 2>&1', $output, $return_code);
-                        if ($return_code !== 0) {
-                            throw new Exception("Arquivo de log não pode ser lido. Verifique as permissões: " . CERTBOT_LOG_PATH);
-                        }
-                    } else {
-                        $logContent = file_get_contents(CERTBOT_LOG_PATH);
-                        if ($logContent === false) {
-                            throw new Exception("Falha ao ler o arquivo de log: " . CERTBOT_LOG_PATH);
-                        }
-                        $output = explode("\n", $logContent);
-                    }
-                    
-                    // Se o log estiver vazio, mostra uma mensagem
-                    if (empty($output) || (count($output) === 1 && empty($output[0]))) {
-                        $output = ["Log vazio ou sem conteúdo."];
-                    }
-                } else {
-                    throw new Exception("Arquivo de log não encontrado: " . CERTBOT_LOG_PATH);
-                }
-                break;
-
             default:
                 throw new Exception("Ação inválida: $action");
         }
@@ -109,10 +83,6 @@ Html::header(
 
       <button class="btn btn-primary" onclick="executeAction('status')">
          <i class="fas fa-certificate"></i> <?= __('Ver status', 'certbotrenew') ?>
-      </button>
-
-      <button class="btn btn-secondary" onclick="executeAction('log')">
-         <i class="fas fa-file-alt"></i> <?= __('Ver log', 'certbotrenew') ?>
       </button>
    </div>
 
