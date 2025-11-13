@@ -10,6 +10,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
     Session::checkLoginUser();
     Session::checkRight("config", READ);
     
+    // Limpa qualquer output anterior
+    if (ob_get_length()) ob_clean();
+    
     header('Content-Type: application/json; charset=UTF-8');
     
     try {
@@ -28,7 +31,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
 
             case 'log':
                 if (file_exists(CERTBOT_LOG_PATH)) {
-                    $output = explode("\n", file_get_contents(CERTBOT_LOG_PATH));
+                    // Verifica se o arquivo é legível
+                    if (!is_readable(CERTBOT_LOG_PATH)) {
+                        // Tenta ler com sudo
+                        exec('sudo cat ' . escapeshellarg(CERTBOT_LOG_PATH) . ' 2>&1', $output, $return_code);
+                        if ($return_code !== 0) {
+                            throw new Exception("Arquivo de log não pode ser lido. Verifique as permissões: " . CERTBOT_LOG_PATH);
+                        }
+                    } else {
+                        $logContent = file_get_contents(CERTBOT_LOG_PATH);
+                        if ($logContent === false) {
+                            throw new Exception("Falha ao ler o arquivo de log: " . CERTBOT_LOG_PATH);
+                        }
+                        $output = explode("\n", $logContent);
+                    }
+                    
+                    // Se o log estiver vazio, mostra uma mensagem
+                    if (empty($output) || (count($output) === 1 && empty($output[0]))) {
+                        $output = ["Log vazio ou sem conteúdo."];
+                    }
                 } else {
                     throw new Exception("Arquivo de log não encontrado: " . CERTBOT_LOG_PATH);
                 }
@@ -38,29 +59,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
                 throw new Exception("Ação inválida: $action");
         }
 
-        echo json_encode([
+        $response = [
             'error' => false,
             'action' => $action,
             'output' => $output,
-            'code' => $return_code
-        ]);
+            'code' => $return_code,
+            'new_csrf_token' => Session::getNewCSRFToken()
+        ];
+        
+        echo json_encode($response);
+        
     } catch (Throwable $e) {
-        http_response_code(500);
-        echo json_encode([
+        $error_response = [
             'error' => true,
-            'message' => $e->getMessage()
-            // Removido 'trace' por segurança em produção
-        ]);
+            'message' => $e->getMessage(),
+            'new_csrf_token' => Session::getNewCSRFToken()
+        ];
+        echo json_encode($error_response);
     }
+    
+    // Garante que nada mais será enviado
     exit;
 }
 
 // --- FRONTEND (apenas para requisições normais) ---
-
-// Verifica permissão
 Session::checkRight("config", READ);
 
-// Cabeçalho HTML padrão do GLPI
 Html::header(
    __('Gerenciamento de Certificados SSL (Certbot)', 'certbotrenew'),
    $_SERVER['PHP_SELF'],
@@ -72,14 +96,12 @@ Html::header(
    <h2><?= __('Gerenciamento de Certificados SSL (Certbot)', 'certbotrenew') ?></h2>
    <p><?= __('Escolha uma ação para renovar ou verificar o status dos certificados SSL.', 'certbotrenew') ?></p>
 
-   <!-- Exibir domínio detectado -->
    <div class="alert alert-info" style="max-width:600px;margin:0 auto 20px;">
       <i class="fas fa-globe"></i>
       <strong><?= __('Domínio detectado:', 'certbotrenew') ?></strong>
       <code><?= htmlspecialchars(preg_replace('/:\d+$/', '', $_SERVER['HTTP_HOST'])) ?></code>
    </div>
 
-   <!-- Botões AJAX -->
    <div class="d-flex justify-content-center" style="gap:10px;margin-bottom:20px;">
       <button class="btn btn-warning" onclick="executeAction('renew')">
          <i class="fas fa-sync-alt"></i> <?= __('Renovar agora', 'certbotrenew') ?>
@@ -94,7 +116,6 @@ Html::header(
       </button>
    </div>
 
-   <!-- Área de log -->
    <pre id="output" style="
       text-align:left;
       background:#111;
@@ -108,10 +129,8 @@ Html::header(
 </div>
 
 <script>
-// Captura o token CSRF do GLPI
-const csrfToken = '<?= Session::getNewCSRFToken() ?>';
+let csrfToken = '<?= Session::getNewCSRFToken() ?>';
 
-// Função para executar ações via AJAX
 async function executeAction(action) {
    const outputArea = document.getElementById('output');
    outputArea.textContent = `⚙️ Executando ação: ${action}...\n`;
@@ -129,11 +148,25 @@ async function executeAction(action) {
          })
       });
 
-      if (!response.ok) {
-         throw new Error(`HTTP ${response.status}`);
+      // Verifica se a resposta está vazia
+      const responseText = await response.text();
+      
+      if (!responseText) {
+         throw new Error('Resposta vazia do servidor');
       }
 
-      const result = await response.json();
+      // Tenta fazer parse do JSON
+      let result;
+      try {
+         result = JSON.parse(responseText);
+      } catch (e) {
+         console.error('Resposta do servidor:', responseText);
+         throw new Error('Resposta inválida do servidor: ' + e.message);
+      }
+
+      if (result.new_csrf_token) {
+         csrfToken = result.new_csrf_token;
+      }
 
       if (result.error) {
          outputArea.textContent += `\n❌ Erro: ${result.message || 'Falha desconhecida'}\n`;
@@ -142,11 +175,16 @@ async function executeAction(action) {
       }
 
    } catch (err) {
-      outputArea.textContent += `\n❗ Erro de comunicação: ${err.message}\n`;
+      outputArea.textContent += `\n❗ Erro: ${err.message}\n`;
+      console.error('Erro completo:', err);
+      
+      if (err.message.includes('JSON') || err.message.includes('token') || err.message.includes('vazia')) {
+         outputArea.textContent += `\n🔄 Recarregando a página...\n`;
+         setTimeout(() => location.reload(), 2000);
+      }
    }
 }
 </script>
 
 <?php
 Html::footer();
-?>
