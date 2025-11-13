@@ -1,126 +1,148 @@
 <?php
 include('../../../inc/includes.php');
 
+// Define o caminho do log do Certbot
+define('CERTBOT_LOG_PATH', '/var/log/letsencrypt/letsencrypt.log');
+
+// --- BACKEND (responde ao AJAX) ---
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ajax'])) {
+    // Verifica permissão para requisições AJAX
+    Session::checkLoginUser();
+    Session::checkRight("config", READ);
+    
+    header('Content-Type: application/json; charset=UTF-8');
+    
+    try {
+        $action = $_POST['action'] ?? '';
+        $output = [];
+        $return_code = 0;
+
+        switch ($action) {
+            case 'renew':
+                exec('sudo /usr/bin/certbot renew 2>&1', $output, $return_code);
+                break;
+
+            case 'status':
+                exec('sudo /usr/bin/certbot certificates 2>&1', $output, $return_code);
+                break;
+
+            case 'log':
+                if (file_exists(CERTBOT_LOG_PATH)) {
+                    $output = explode("\n", file_get_contents(CERTBOT_LOG_PATH));
+                } else {
+                    throw new Exception("Arquivo de log não encontrado: " . CERTBOT_LOG_PATH);
+                }
+                break;
+
+            default:
+                throw new Exception("Ação inválida: $action");
+        }
+
+        echo json_encode([
+            'error' => false,
+            'action' => $action,
+            'output' => $output,
+            'code' => $return_code
+        ]);
+    } catch (Throwable $e) {
+        http_response_code(500);
+        echo json_encode([
+            'error' => true,
+            'message' => $e->getMessage()
+            // Removido 'trace' por segurança em produção
+        ]);
+    }
+    exit;
+}
+
+// --- FRONTEND (apenas para requisições normais) ---
+
+// Verifica permissão
 Session::checkRight("config", READ);
 
+// Cabeçalho HTML padrão do GLPI
 Html::header(
-   __('Certbot Renew', 'certbotrenew'),
+   __('Gerenciamento de Certificados SSL (Certbot)', 'certbotrenew'),
    $_SERVER['PHP_SELF'],
    'tools',
    'PluginCertbotrenewMenu'
 );
-
-// Fun��o auxiliar para execu��o segura no servidor
-function runCommand($cmd) {
-   $output = [];
-   exec($cmd . ' 2>&1', $output, $code);
-   return ['output' => $output, 'code' => $code];
-}
-
-// Se for requisi��o AJAX (JSON)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH'])) {
-   header('Content-Type: application/json; charset=utf-8');
-
-   // Garante sess�o v�lida e token CSRF
-   Session::checkValidSession();
-   if (isset($_SERVER['HTTP_X_GLPI_CSRF_TOKEN'])) {
-      $_POST['_glpi_csrf_token'] = $_SERVER['HTTP_X_GLPI_CSRF_TOKEN'];
-   }
-   Session::checkCSRFToken();
-
-   $data = json_decode(file_get_contents('php://input'), true);
-   $action = $data['action'] ?? '';
-   $result = [];
-
-   switch ($action) {
-      case 'renew':
-         $result = runCommand('sudo /usr/bin/certbot renew');
-         break;
-      case 'status':
-         $result = runCommand('sudo /usr/bin/certbot certificates');
-         break;
-      case 'log':
-         $log_path = '/var/log/letsencrypt/letsencrypt.log';
-         if (file_exists($log_path)) {
-            $result = ['output' => explode("\n", file_get_contents($log_path)), 'code' => 0];
-         } else {
-            $result = ['output' => ["Arquivo de log n�o encontrado em $log_path"], 'code' => 1];
-         }
-         break;
-      default:
-         $result = ['output' => ['A��o inv�lida.'], 'code' => 1];
-         break;
-   }
-
-   echo json_encode($result);
-   exit;
-}
 ?>
-
-<div class="card" style="max-width:900px;margin:40px auto;padding:30px;text-align:center;">
+<div class="center" style="max-width:900px;margin:40px auto;">
    <h2><?= __('Gerenciamento de Certificados SSL (Certbot)', 'certbotrenew') ?></h2>
-   <p><?= __('Escolha uma ação para instalar, renovar ou verificar o status dos certificados SSL.', 'certbotrenew') ?></p>
+   <p><?= __('Escolha uma ação para renovar ou verificar o status dos certificados SSL.', 'certbotrenew') ?></p>
 
+   <!-- Exibir domínio detectado -->
    <div class="alert alert-info" style="max-width:600px;margin:0 auto 20px;">
-      <i class="fas fa-globe"></i> 
-      <strong><?= __('Domínio detectado:', 'certbotrenew') ?></strong> 
-      <code><?= htmlspecialchars($_SERVER['HTTP_HOST']) ?></code>
+      <i class="fas fa-globe"></i>
+      <strong><?= __('Domínio detectado:', 'certbotrenew') ?></strong>
+      <code><?= htmlspecialchars(preg_replace('/:\d+$/', '', $_SERVER['HTTP_HOST'])) ?></code>
    </div>
 
-   <div style="margin-top:25px;">
-      <button onclick="runCertbot('renew')" class="btn btn-primary" style="margin-right:10px;">
+   <!-- Botões AJAX -->
+   <div class="d-flex justify-content-center" style="gap:10px;margin-bottom:20px;">
+      <button class="btn btn-warning" onclick="executeAction('renew')">
          <i class="fas fa-sync-alt"></i> <?= __('Renovar agora', 'certbotrenew') ?>
       </button>
 
-      <button onclick="runCertbot('status')" class="btn btn-info" style="margin-right:10px;">
+      <button class="btn btn-primary" onclick="executeAction('status')">
          <i class="fas fa-certificate"></i> <?= __('Ver status', 'certbotrenew') ?>
       </button>
 
-      <button onclick="runCertbot('log')" class="btn btn-secondary">
+      <button class="btn btn-secondary" onclick="executeAction('log')">
          <i class="fas fa-file-alt"></i> <?= __('Ver log', 'certbotrenew') ?>
       </button>
    </div>
 
-   <div id="output" style="margin-top:30px;text-align:left;max-height:500px;overflow:auto;background:#111;color:#0f0;padding:10px;border-radius:10px;display:none;">
-      <pre id="output-content"></pre>
-   </div>
+   <!-- Área de log -->
+   <pre id="output" style="
+      text-align:left;
+      background:#111;
+      color:#0f0;
+      padding:10px;
+      border-radius:10px;
+      overflow:auto;
+      max-height:500px;
+      display:block;
+   "><?= __('⏳ Aguardando ação...', 'certbotrenew') ?></pre>
 </div>
 
 <script>
-const CSRF = "<?= addslashes(Session::getNewCSRFToken()) ?>";
+// Captura o token CSRF do GLPI
+const csrfToken = '<?= Session::getNewCSRFToken() ?>';
 
-async function runCertbot(action) {
-   const outputDiv = document.getElementById("output");
-   const pre = document.getElementById("output-content");
-
-   outputDiv.style.display = "block";
-   pre.innerHTML = `? Executando ação: ${action}...\n`;
+// Função para executar ações via AJAX
+async function executeAction(action) {
+   const outputArea = document.getElementById('output');
+   outputArea.textContent = `⚙️ Executando ação: ${action}...\n`;
 
    try {
-      const response = await fetch(window.location.href, {
-         method: "POST",
+      const response = await fetch('<?= $_SERVER['PHP_SELF'] ?>', {
+         method: 'POST',
          headers: {
-            "Content-Type": "application/json",
-            "X-Requested-With": "XMLHttpRequest",
-            "X-GLPI-CSRF-TOKEN": CSRF
+            'Content-Type': 'application/x-www-form-urlencoded',
          },
-         body: JSON.stringify({ action })
+         body: new URLSearchParams({ 
+             ajax: '1', 
+             action: action,
+             _glpi_csrf_token: csrfToken
+         })
       });
 
-      const data = await response.json();
-
-      if (data.output) {
-         pre.innerHTML += data.output.join("\n");
-         if (data.code === 0) {
-            pre.innerHTML += "\n\n? Opera��o conclu�da com sucesso!";
-         } else {
-            pre.innerHTML += "\n\n?? Ocorreu um erro durante a execu��o.";
-         }
-      } else {
-         pre.innerHTML += "\n?? Nenhuma sa�da retornada.";
+      if (!response.ok) {
+         throw new Error(`HTTP ${response.status}`);
       }
+
+      const result = await response.json();
+
+      if (result.error) {
+         outputArea.textContent += `\n❌ Erro: ${result.message || 'Falha desconhecida'}\n`;
+      } else {
+         outputArea.textContent += `\n✅ Saída do comando:\n\n${result.output.join('\n')}\n`;
+      }
+
    } catch (err) {
-      pre.innerHTML += "\n? Erro de comunicação com o servidor: " + err.message;
+      outputArea.textContent += `\n❗ Erro de comunicação: ${err.message}\n`;
    }
 }
 </script>
