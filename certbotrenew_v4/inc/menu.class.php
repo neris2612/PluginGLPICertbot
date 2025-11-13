@@ -8,7 +8,7 @@ class PluginCertbotrenewMenu extends CommonGLPI {
       $menu = [];
       $menu['title'] = self::getMenuName();
       $menu['page']  = '/plugins/certbotrenew/front/renew.form.php';
-      $menu['icon']  = 'fas fa-lock';
+      $menu['icon']  = 'fas fa-certificate';
       return $menu;
    }
 }
